@@ -64,6 +64,7 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 # Convert back to dict with exclude_none=True to exclude None fields
                 dict_reasoning_item = reasoning_item.model_dump(exclude_none=True)
                 dict_reasoning_item.pop("status", None)
+                dict_reasoning_item.pop("encrypted_content", None)
 
                 return dict_reasoning_item
             except Exception as e:
@@ -74,8 +75,8 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 filtered_item = {
                     k: v
                     for k, v in item.items()
-                    if v is not None
-                    or k not in {"status", "content", "encrypted_content"}
+                    if k != "encrypted_content"
+                    and (v is not None or k not in {"status", "content"})
                 }
                 return filtered_item
         return item
@@ -98,7 +99,11 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             for item in validated_input:
                 if isinstance(item, dict) and item.get("type") == "message":
                     # Filter out status field from message items
-                    filtered_item = {k: v for k, v in item.items() if k != "status"}
+                    filtered_item = {
+                        k: v
+                        for k, v in item.items()
+                        if k not in {"status", "encrypted_content"}
+                    }
                     filtered_input.append(filtered_item)
                 else:
                     filtered_input.append(item)

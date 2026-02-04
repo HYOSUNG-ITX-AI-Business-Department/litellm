@@ -65,7 +65,7 @@ async def test_azure_responses_api_status_error():
                 "summary": [],
                 "type": "reasoning",
                 "content": None,
-                "encrypted_content": None,
+                "encrypted_content": "gAAA-test-encrypted-content",
                 "status": "completed",
             },
             {
