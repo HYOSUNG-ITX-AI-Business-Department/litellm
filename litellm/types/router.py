@@ -804,6 +804,7 @@ OptionalPreCallChecks = List[
         "prompt_caching",
         "router_budget_limiting",
         "responses_api_deployment_check",
+        "response_api_deployment_check",
         "forward_client_headers_by_model_group",
     ]
 ]

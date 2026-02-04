@@ -5,7 +5,7 @@ This hook uses the DBSpendUpdateWriter to batch-write response IDs to the databa
 instead of writing immediately on each request.
 """
 
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional, Tuple, Union, cast
 
 from fastapi import HTTPException
 
@@ -27,9 +27,13 @@ if TYPE_CHECKING:
     from litellm.proxy._types import UserAPIKeyAuth
 
 
+RESPONSE_ID_SECURITY_CACHE_PREFIX = "litellm:responses_id_security:response_id:"
+RESPONSE_ID_SECURITY_CACHE_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+
+
 class ResponsesIDSecurity(CustomLogger):
-    def __init__(self):
-        pass
+    def __init__(self, internal_usage_cache: Optional[Any] = None):
+        self.internal_usage_cache = internal_usage_cache
 
     async def async_pre_call_hook(
         self,
@@ -50,29 +54,46 @@ class ResponsesIDSecurity(CustomLogger):
         if call_type == "aresponses":
             # check 'previous_response_id' if present in the data
             previous_response_id = data.get("previous_response_id")
-            if previous_response_id and self._is_encrypted_response_id(
-                previous_response_id
-            ):
-                original_response_id, user_id, team_id = self._decrypt_response_id(
-                    previous_response_id
+            if previous_response_id:
+                resolved_response_id = await self._resolve_encrypted_response_id(
+                    response_id=previous_response_id,
+                    user_api_key_dict=user_api_key_dict,
                 )
-                self.check_user_access_to_response_id(
-                    user_id, team_id, user_api_key_dict
-                )
-                data["previous_response_id"] = original_response_id
+                if resolved_response_id is not None:
+                    data["previous_response_id"] = resolved_response_id
         elif call_type in {"aget_responses", "adelete_responses", "acancel_responses"}:
             response_id = data.get("response_id")
-
-            if response_id and self._is_encrypted_response_id(response_id):
-                original_response_id, user_id, team_id = self._decrypt_response_id(
-                    response_id
+            if response_id:
+                resolved_response_id = await self._resolve_encrypted_response_id(
+                    response_id=response_id,
+                    user_api_key_dict=user_api_key_dict,
                 )
-
-                self.check_user_access_to_response_id(
-                    user_id, team_id, user_api_key_dict
-                )
-                data["response_id"] = original_response_id
+                if resolved_response_id is not None:
+                    data["response_id"] = resolved_response_id
         return data
+
+    async def _resolve_encrypted_response_id(
+        self,
+        response_id: str,
+        user_api_key_dict: "UserAPIKeyAuth",
+    ) -> Optional[str]:
+        if self._is_encrypted_response_id(response_id):
+            original_response_id, user_id, team_id = self._decrypt_response_id(
+                response_id
+            )
+            self.check_user_access_to_response_id(user_id, team_id, user_api_key_dict)
+            return original_response_id
+
+        cached_mapping = await self._get_cached_response_id_mapping(response_id)
+        if cached_mapping is None:
+            return None
+
+        cached_user_id = cached_mapping.get("user_id")
+        cached_team_id = cached_mapping.get("team_id")
+        self.check_user_access_to_response_id(
+            cached_user_id, cached_team_id, user_api_key_dict
+        )
+        return cast(Optional[str], cached_mapping.get("response_id"))
 
     def check_user_access_to_response_id(
         self,
@@ -239,6 +260,49 @@ class ResponsesIDSecurity(CustomLogger):
             setattr(response, "response", response_obj)
         return response
 
+    async def _cache_response_id_mapping(
+        self,
+        encrypted_response_id: str,
+        original_response_id: str,
+        user_api_key_dict: "UserAPIKeyAuth",
+    ) -> None:
+        if self.internal_usage_cache is None:
+            return
+        cache_key = f"{RESPONSE_ID_SECURITY_CACHE_PREFIX}{encrypted_response_id}"
+        cache_value: Dict[str, Optional[str]] = {
+            "response_id": original_response_id,
+            "user_id": user_api_key_dict.user_id,
+            "team_id": user_api_key_dict.team_id,
+        }
+        try:
+            await self.internal_usage_cache.async_set_cache(
+                key=cache_key,
+                value=cache_value,
+                ttl=RESPONSE_ID_SECURITY_CACHE_TTL_SECONDS,
+                litellm_parent_otel_span=None,
+            )
+        except Exception as e:
+            verbose_proxy_logger.debug(
+                f"Responses ID Security: unable to cache response id mapping - {str(e)}"
+            )
+
+    async def _get_cached_response_id_mapping(
+        self, encrypted_response_id: str
+    ) -> Optional[Dict[str, Any]]:
+        if self.internal_usage_cache is None:
+            return None
+        cache_key = f"{RESPONSE_ID_SECURITY_CACHE_PREFIX}{encrypted_response_id}"
+        try:
+            return await self.internal_usage_cache.async_get_cache(
+                key=cache_key,
+                litellm_parent_otel_span=None,
+            )
+        except Exception as e:
+            verbose_proxy_logger.debug(
+                f"Responses ID Security: unable to fetch cached response id mapping - {str(e)}"
+            )
+            return None
+
     async def async_post_call_success_hook(
         self,
         data: dict,
@@ -256,10 +320,22 @@ class ResponsesIDSecurity(CustomLogger):
         if general_settings.get("disable_responses_id_security", False):
             return response
         if isinstance(response, ResponsesAPIResponse):
+            original_response_id = self._get_primary_response_id(response=response)
             response = cast(
                 ResponsesAPIResponse,
                 self._encrypt_response_id(response, user_api_key_dict),
             )
+            encrypted_response_id = self._get_primary_response_id(response=response)
+            if (
+                original_response_id
+                and encrypted_response_id
+                and original_response_id != encrypted_response_id
+            ):
+                await self._cache_response_id_mapping(
+                    encrypted_response_id=encrypted_response_id,
+                    original_response_id=original_response_id,
+                    user_api_key_dict=user_api_key_dict,
+                )
         return response
 
     async def async_post_call_streaming_iterator_hook(  # type: ignore
@@ -274,5 +350,39 @@ class ResponsesIDSecurity(CustomLogger):
                 == "/v1/responses"  # only encrypt the response id for the responses api
                 and not general_settings.get("disable_responses_id_security", False)
             ):
+                original_response_id = self._get_primary_response_id(response=chunk)
                 chunk = self._encrypt_response_id(chunk, user_api_key_dict)
+                encrypted_response_id = self._get_primary_response_id(response=chunk)
+                if (
+                    original_response_id
+                    and encrypted_response_id
+                    and original_response_id != encrypted_response_id
+                ):
+                    await self._cache_response_id_mapping(
+                        encrypted_response_id=encrypted_response_id,
+                        original_response_id=original_response_id,
+                        user_api_key_dict=user_api_key_dict,
+                    )
             yield chunk
+
+    def _get_primary_response_id(
+        self, response: BaseLiteLLMOpenAIResponseObject
+    ) -> Optional[str]:
+        response_id = getattr(response, "id", None)
+        response_obj = getattr(response, "response", None)
+        if (
+            response_id
+            and isinstance(response_id, str)
+            and response_id.startswith("resp_")
+        ):
+            return response_id
+
+        if response_obj and isinstance(response_obj, ResponsesAPIResponse):
+            response_obj_id = getattr(response_obj, "id", None)
+            if (
+                response_obj_id
+                and isinstance(response_obj_id, str)
+                and response_obj_id.startswith("resp_")
+            ):
+                return response_obj_id
+        return None

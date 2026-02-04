@@ -1185,7 +1185,10 @@ class Router:
                         provider_budget_config=self.provider_budget_config,
                         model_list=self.model_list,
                     )
-                elif pre_call_check == "responses_api_deployment_check":
+                elif pre_call_check in {
+                    "responses_api_deployment_check",
+                    "response_api_deployment_check",
+                }:
                     _callback = ResponsesApiDeploymentCheck()
                 if _callback is not None:
                     if self.optional_callbacks is None:

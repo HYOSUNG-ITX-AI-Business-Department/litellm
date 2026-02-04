@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from litellm.proxy.hooks.responses_id_security import ResponsesIDSecurity
+from litellm.caching.dual_cache import DualCache
+from litellm.proxy.hooks.responses_id_security import (
+    RESPONSE_ID_SECURITY_CACHE_PREFIX,
+    ResponsesIDSecurity,
+)
+from litellm.proxy.utils import InternalUsageCache
 from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import SpecialEnums
 
@@ -334,6 +339,43 @@ class TestAsyncPreCallHook:
                 )
 
                 assert result["previous_response_id"] == "resp_original_123"
+
+    @pytest.mark.asyncio
+    async def test_async_pre_call_hook_uses_cached_response_id_mapping(
+        self, mock_user_api_key_dict, mock_cache
+    ):
+        """Test pre-call hook resolves encrypted response_id via cache mapping"""
+        internal_usage_cache = InternalUsageCache(dual_cache=DualCache())
+        responses_id_security = ResponsesIDSecurity(
+            internal_usage_cache=internal_usage_cache
+        )
+
+        encrypted_response_id = "resp_encrypted_123"
+        original_response_id = "resp_original_123"
+        cache_key = f"{RESPONSE_ID_SECURITY_CACHE_PREFIX}{encrypted_response_id}"
+        await internal_usage_cache.async_set_cache(
+            key=cache_key,
+            value={
+                "response_id": original_response_id,
+                "user_id": mock_user_api_key_dict.user_id,
+                "team_id": mock_user_api_key_dict.team_id,
+            },
+            ttl=60,
+            litellm_parent_otel_span=None,
+        )
+
+        data = {"previous_response_id": encrypted_response_id}
+        with patch.object(
+            responses_id_security, "_is_encrypted_response_id", return_value=False
+        ):
+            result = await responses_id_security.async_pre_call_hook(
+                user_api_key_dict=mock_user_api_key_dict,
+                cache=mock_cache,
+                data=data,
+                call_type="aresponses",
+            )
+
+        assert result["previous_response_id"] == original_response_id
 
     @pytest.mark.asyncio
     async def test_async_pre_call_hook_aget_responses(
