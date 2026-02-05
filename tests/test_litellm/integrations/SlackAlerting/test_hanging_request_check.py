@@ -11,6 +11,8 @@ from litellm.types.integrations.slack_alerting import (
     HangingRequestData,
 )
 
+TEST_SAFETY_MARGIN_SECONDS = 10
+
 
 class TestAlertingHangingRequestCheck:
     """Test suite for AlertingHangingRequestCheck class"""
@@ -274,9 +276,8 @@ class TestAlertingHangingRequestCheck:
         alerting_threshold = (
             hanging_request_checker.slack_alerting_object.alerting_threshold
         )
-        safety_margin_seconds = 10
         hanging_data.start_time = time.time() - (
-            alerting_threshold + safety_margin_seconds
+            alerting_threshold + TEST_SAFETY_MARGIN_SECONDS
         )
         await hanging_request_checker.hanging_request_cache.async_set_cache(
             key="hanging_request_999", value=hanging_data, ttl=300
@@ -346,9 +347,8 @@ class TestAlertingHangingRequestCheck:
         alerting_threshold = (
             hanging_request_checker.slack_alerting_object.alerting_threshold
         )
-        safety_margin_seconds = 10
         hanging_data.start_time = time.time() - (
-            alerting_threshold + safety_margin_seconds
+            alerting_threshold + TEST_SAFETY_MARGIN_SECONDS
         )
         hanging_data.alert_sent = True
 
@@ -382,7 +382,9 @@ class TestAlertingHangingRequestCheck:
         alerting_threshold = (
             hanging_request_checker.slack_alerting_object.alerting_threshold
         )
-        hanging_data.start_time = time.time() - (alerting_threshold + 10)
+        hanging_data.start_time = time.time() - (
+            alerting_threshold + TEST_SAFETY_MARGIN_SECONDS
+        )
 
         await hanging_request_checker.hanging_request_cache.async_set_cache(
             key=request_id, value=hanging_data, ttl=300
