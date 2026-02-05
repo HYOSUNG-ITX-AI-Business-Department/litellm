@@ -79,6 +79,10 @@ tests/llm_translation/test_vertex_key.json
 litellm/proxy/migrations/0_init/migration.sql
 litellm/proxy/db/migrations/0_init/migration.sql
 litellm/proxy/db/migrations/*
+
+# Local agent artifacts (do not commit)
+registered_agents.json
+task_agent_mapping.json
 litellm/proxy/migrations/*config.yaml
 litellm/proxy/migrations/*
 litellm/proxy/to_delete_loadtest_work/*
