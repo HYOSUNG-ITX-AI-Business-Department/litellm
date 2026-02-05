@@ -115,11 +115,9 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if should_start_new_block:
                     self._increment_content_block_index()
 
-                processed_chunk = (
-                    self._adapter.translate_streaming_openai_response_to_anthropic(
-                        response=chunk,
-                        current_content_block_index=self.current_content_block_index,
-                    )
+                processed_chunk = self._adapter.translate_streaming_openai_response_to_anthropic(
+                    response=chunk,
+                    current_content_block_index=self.current_content_block_index,
                 )
 
                 # Some Responses API stream events are no-ops (e.g. *_done) and should
@@ -141,10 +139,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         "index": max(self.current_content_block_index - 1, 0),
                     }
 
-                if (
-                    processed_chunk["type"] == "message_delta"
-                    and self.sent_content_block_finish is False
-                ):
+                if processed_chunk["type"] == "message_delta" and self.sent_content_block_finish is False:
                     self.holding_chunk = processed_chunk
                     self.sent_content_block_finish = True
                     return {
@@ -171,9 +166,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 return {"type": "message_stop"}
             raise StopIteration
         except Exception as e:
-            verbose_logger.error(
-                "Anthropic Adapter - {}\n{}".format(e, traceback.format_exc())
-            )
+            verbose_logger.error("Anthropic Adapter - {}\n{}".format(e, traceback.format_exc()))
             raise StopAsyncIteration
 
     async def __anext__(self):  # noqa: PLR0915
@@ -219,21 +212,26 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
 
                 # Check if we need to start a new content block
                 should_start_new_block = self._should_start_new_content_block(chunk)
-                if should_start_new_block:
-                    self._increment_content_block_index()
 
-                processed_chunk = (
-                    self._adapter.translate_streaming_openai_response_to_anthropic(
-                        response=chunk,
-                        current_content_block_index=self.current_content_block_index,
-                    )
+                next_content_block_index = (
+                    self.current_content_block_index + 1 if should_start_new_block else self.current_content_block_index
                 )
 
+                processed_chunk = self._adapter.translate_streaming_openai_response_to_anthropic(
+                    response=chunk,
+                    current_content_block_index=next_content_block_index,
+                )
+
+                # translate_streaming_openai_response_to_anthropic can return None for
+                # no-op / *_DONE / unsupported events. Skip these safely.
+                if processed_chunk is None:
+                    continue
+
+                if should_start_new_block:
+                    self.current_content_block_index = next_content_block_index
+
                 # Check if this is a usage chunk and we have a held stop_reason chunk
-                if (
-                    self.holding_stop_reason_chunk is not None
-                    and getattr(chunk, "usage", None) is not None
-                ):
+                if self.holding_stop_reason_chunk is not None and getattr(chunk, "usage", None) is not None:
                     # Merge usage into the held stop_reason chunk
                     merged_chunk = self.holding_stop_reason_chunk.copy()
                     if "delta" not in merged_chunk:
@@ -246,17 +244,11 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     }
                     # Add cache tokens if available (for prompt caching support)
                     if hasattr(chunk.usage, "_cache_creation_input_tokens"):
-                        cache_creation = (
-                            getattr(chunk.usage, "_cache_creation_input_tokens", 0) or 0
-                        )
+                        cache_creation = getattr(chunk.usage, "_cache_creation_input_tokens", 0) or 0
                         if cache_creation > 0:
-                            usage_dict["cache_creation_input_tokens"] = int(
-                                cache_creation
-                            )
+                            usage_dict["cache_creation_input_tokens"] = int(cache_creation)
                     if hasattr(chunk.usage, "_cache_read_input_tokens"):
-                        cache_read = (
-                            getattr(chunk.usage, "_cache_read_input_tokens", 0) or 0
-                        )
+                        cache_read = getattr(chunk.usage, "_cache_read_input_tokens", 0) or 0
                         if cache_read > 0:
                             usage_dict["cache_read_input_tokens"] = int(cache_read)
                     merged_chunk["usage"] = usage_dict
@@ -299,10 +291,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         # Return the first queued item
                         return self.chunk_queue.popleft()
 
-                    if (
-                        processed_chunk["type"] == "message_delta"
-                        and self.sent_content_block_finish is False
-                    ):
+                    if processed_chunk["type"] == "message_delta" and self.sent_content_block_finish is False:
                         # Queue both the content_block_stop and the holding chunk
                         self.chunk_queue.append(
                             {
@@ -311,10 +300,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                             }
                         )
                         self.sent_content_block_finish = True
-                        if (
-                            processed_chunk.get("delta", {}).get("stop_reason")
-                            is not None
-                        ):
+                        if processed_chunk.get("delta", {}).get("stop_reason") is not None:
                             self.holding_stop_reason_chunk = processed_chunk
                         else:
                             self.chunk_queue.append(processed_chunk)
@@ -435,9 +421,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
             (
                 block_type,
                 content_block_start,
-            ) = self._adapter._translate_streaming_openai_responses_api_event_to_anthropic_content_block(
-                chunk
-            )
+            ) = self._adapter._translate_streaming_openai_responses_api_event_to_anthropic_content_block(chunk)
 
         if block_type != self.current_content_block_type:
             self.current_content_block_type = block_type
