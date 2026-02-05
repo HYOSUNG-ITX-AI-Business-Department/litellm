@@ -15,14 +15,12 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
 import litellm
-from litellm._logging import verbose_logger
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.llms.custom_httpx.http_handler import (
     _DEFAULT_TTL_FOR_HTTPX_CLIENTS,
     AsyncHTTPHandler,
     get_ssl_configuration,
 )
-from litellm.types.utils import LlmProviders
 
 
 class OpenAIError(BaseLLMException):
@@ -45,9 +43,7 @@ class OpenAIError(BaseLLMException):
         if response:
             self.response = response
         else:
-            self.response = httpx.Response(
-                status_code=status_code, request=self.request
-            )
+            self.response = httpx.Response(status_code=status_code, request=self.request)
         super().__init__(
             status_code=status_code,
             message=self.message,
@@ -81,11 +77,7 @@ def drop_params_from_unprocessable_entity_error(
         error_body = error_message
     else:
         error_body = e.body
-    if (
-        error_body is not None
-        and isinstance(error_body, dict)
-        and error_body.get("message")
-    ):
+    if error_body is not None and isinstance(error_body, dict) and error_body.get("message"):
         message = error_body.get("message", {})
         if isinstance(message, str):
             try:
@@ -143,15 +135,11 @@ class BaseOpenAILLM:
         )
 
     @staticmethod
-    def get_openai_client_cache_key(
-        client_initialization_params: dict, client_type: Literal["openai", "azure"]
-    ) -> str:
+    def get_openai_client_cache_key(client_initialization_params: dict, client_type: Literal["openai", "azure"]) -> str:
         """Creates a cache key for the OpenAI client based on the client initialization parameters"""
         hashed_api_key = None
         if client_initialization_params.get("api_key") is not None:
-            hash_object = hashlib.sha256(
-                client_initialization_params.get("api_key", "").encode()
-            )
+            hash_object = hashlib.sha256(client_initialization_params.get("api_key", "").encode())
             # Hexadecimal representation of the hash
             hashed_api_key = hash_object.hexdigest()
 
@@ -168,9 +156,7 @@ class BaseOpenAILLM:
             "api_base",
         ]
         openai_client_fields = (
-            BaseOpenAILLM.get_openai_client_initialization_param_fields(
-                client_type=client_type
-            )
+            BaseOpenAILLM.get_openai_client_initialization_param_fields(client_type=client_type)
             + LITELLM_CLIENT_SPECIFIC_PARAMS
         )
 
@@ -181,9 +167,7 @@ class BaseOpenAILLM:
         return _cache_key
 
     @staticmethod
-    def get_openai_client_initialization_param_fields(
-        client_type: Literal["openai", "azure"]
-    ) -> List[str]:
+    def get_openai_client_initialization_param_fields(client_type: Literal["openai", "azure"]) -> List[str]:
         """Returns a list of fields that are used to initialize the OpenAI client"""
         import inspect
 
@@ -205,67 +189,28 @@ class BaseOpenAILLM:
         if litellm.aclient_session is not None:
             return litellm.aclient_session
 
-        # Use the global cached client system to prevent memory leaks (issue #14540)
-        # This routes through get_async_httpx_client() which provides TTL-based caching
-        from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
+        # Get unified SSL configuration
+        ssl_config = get_ssl_configuration()
 
-        try:
-            # Get SSL config and include in params for proper cache key
-            ssl_config = get_ssl_configuration()
-            params = {"ssl_verify": ssl_config} if ssl_config is not None else {}
-            params["disable_aiohttp_transport"] = litellm.disable_aiohttp_transport
-
-            # Get a cached AsyncHTTPHandler which manages the httpx.AsyncClient
-            cached_handler = get_async_httpx_client(
-                llm_provider=LlmProviders.OPENAI,  # Cache key includes provider
-                params=params,  # Include SSL config in cache key
+        return httpx.AsyncClient(
+            verify=ssl_config,
+            transport=AsyncHTTPHandler._create_async_transport(
+                ssl_context=ssl_config if isinstance(ssl_config, ssl.SSLContext) else None,
+                ssl_verify=ssl_config if isinstance(ssl_config, bool) else None,
                 shared_session=shared_session,
-            )
-            # Return the underlying httpx client from the handler
-            return cached_handler.client
-        except (ImportError, AttributeError, KeyError) as e:
-            # Fallback to creating a client directly if caching system unavailable
-            # This preserves backwards compatibility
-            verbose_logger.debug(
-                f"Client caching unavailable ({type(e).__name__}), using direct client creation"
-            )
-            ssl_config = get_ssl_configuration()
-            return httpx.AsyncClient(
-                verify=ssl_config,
-                transport=AsyncHTTPHandler._create_async_transport(
-                    ssl_context=ssl_config
-                    if isinstance(ssl_config, ssl.SSLContext)
-                    else None,
-                    ssl_verify=ssl_config if isinstance(ssl_config, bool) else None,
-                    shared_session=shared_session,
-                ),
-                follow_redirects=True,
-            )
+            ),
+            follow_redirects=True,
+        )
 
     @staticmethod
     def _get_sync_http_client() -> Optional[httpx.Client]:
         if litellm.client_session is not None:
             return litellm.client_session
 
-        # Use the global cached client system to prevent memory leaks (issue #14540)
-        from litellm.llms.custom_httpx.http_handler import _get_httpx_client
+        # Get unified SSL configuration
+        ssl_config = get_ssl_configuration()
 
-        try:
-            # Get SSL config and include in params for proper cache key
-            ssl_config = get_ssl_configuration()
-            params = {"ssl_verify": ssl_config} if ssl_config is not None else None
-
-            # Get a cached HTTPHandler which manages the httpx.Client
-            cached_handler = _get_httpx_client(params=params)
-            # Return the underlying httpx client from the handler
-            return cached_handler.client
-        except (ImportError, AttributeError, KeyError) as e:
-            # Fallback to creating a client directly if caching system unavailable
-            verbose_logger.debug(
-                f"Client caching unavailable ({type(e).__name__}), using direct client creation"
-            )
-            ssl_config = get_ssl_configuration()
-            return httpx.Client(
-                verify=ssl_config,
-                follow_redirects=True,
-            )
+        return httpx.Client(
+            verify=ssl_config,
+            follow_redirects=True,
+        )

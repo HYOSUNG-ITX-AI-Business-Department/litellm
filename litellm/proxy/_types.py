@@ -228,6 +228,7 @@ class KeyManagementRoutes(str, enum.Enum):
     KEY_BLOCK = "/key/block"
     KEY_UNBLOCK = "/key/unblock"
     KEY_BULK_UPDATE = "/key/bulk_update"
+    KEY_RESET_SPEND = "/key/{key_id}/reset_spend"
 
     # info and health routes
     KEY_INFO = "/key/info"
@@ -985,6 +986,10 @@ class RegenerateKeyRequest(GenerateKeyRequest):
     spend: Optional[float] = None
     metadata: Optional[dict] = None
     new_master_key: Optional[str] = None
+
+
+class ResetSpendRequest(LiteLLMPydanticObjectBase):
+    reset_to: float
 
 
 class KeyRequest(LiteLLMPydanticObjectBase):
@@ -3668,7 +3673,7 @@ class LiteLLM_JWTAuth(LiteLLMPydanticObjectBase):
     team_id_upsert: bool = False
     team_ids_jwt_field: Optional[str] = None
     upsert_sso_user_to_team: bool = False
-    team_allowed_routes: List[str] = ["openai_routes", "info_routes"]
+    team_allowed_routes: List[str] = ["openai_routes", "info_routes", "mcp_routes"]
     team_id_default: Optional[str] = Field(
         default=None,
         description="If no team_id given, default permissions/spend-tracking to this team.s",

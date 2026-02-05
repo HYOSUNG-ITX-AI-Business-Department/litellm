@@ -117,6 +117,9 @@ from litellm.router_utils.pre_call_checks.prompt_caching_deployment_check import
 from litellm.router_utils.pre_call_checks.responses_api_deployment_check import (
     ResponsesApiDeploymentCheck,
 )
+from litellm.router_utils.pre_call_checks.model_rate_limit_check import (
+    ModelRateLimitingCheck,
+)
 from litellm.router_utils.router_callbacks.track_deployment_metrics import (
     increment_deployment_failures_for_current_minute,
     increment_deployment_successes_for_current_minute,
@@ -224,6 +227,7 @@ class Router:
         redis_host: Optional[str] = None,
         redis_port: Optional[int] = None,
         redis_password: Optional[str] = None,
+        redis_db: Optional[int] = None,
         cache_responses: Optional[bool] = False,
         cache_kwargs: dict = {},  # additional kwargs to pass to RedisCache (see caching.py)
         caching_groups: Optional[
@@ -409,6 +413,12 @@ class Router:
 
             if redis_password is not None:
                 cache_config["password"] = redis_password
+
+            if redis_db is not None:
+                verbose_router_logger.warning(
+                    "Deprecated 'redis_db' argument used. Please remove 'redis_db' from your config/database and use 'cache_kwargs' instead."
+                )
+                cache_config["db"] = str(redis_db)
 
             # Add additional key-value pairs from cache_kwargs
             cache_config.update(cache_kwargs)
@@ -1187,6 +1197,8 @@ class Router:
                     )
                 elif pre_call_check == "responses_api_deployment_check":
                     _callback = ResponsesApiDeploymentCheck()
+                elif pre_call_check == "enforce_model_rate_limits":
+                    _callback = ModelRateLimitingCheck(dual_cache=self.cache)
                 if _callback is not None:
                     if self.optional_callbacks is None:
                         self.optional_callbacks = []
