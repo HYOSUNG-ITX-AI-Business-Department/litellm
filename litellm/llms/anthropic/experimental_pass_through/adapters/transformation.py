@@ -432,9 +432,9 @@ class LiteLLMAnthropicMessagesAdapter:
 
             ## ASSISTANT MESSAGE ##
             assistant_message_str: Optional[str] = None
-            assistant_content_list: List[
-                Dict[str, Any]
-            ] = []  # For content blocks with cache_control
+            assistant_content_list: List[Dict[str, Any]] = (
+                []
+            )  # For content blocks with cache_control
             has_cache_control_in_text = False
             tool_calls: List[ChatCompletionAssistantToolCall] = []
             thinking_blocks: List[
@@ -478,12 +478,12 @@ class LiteLLMAnthropicMessagesAdapter:
                                         function_chunk.get("provider_specific_fields")
                                         or {}
                                     )
-                                    provider_specific_fields[
-                                        "thought_signature"
-                                    ] = signature
-                                    function_chunk[
-                                        "provider_specific_fields"
-                                    ] = provider_specific_fields
+                                    provider_specific_fields["thought_signature"] = (
+                                        signature
+                                    )
+                                    function_chunk["provider_specific_fields"] = (
+                                        provider_specific_fields
+                                    )
 
                                 tool_call = ChatCompletionAssistantToolCall(
                                     id=content.get("id", ""),
@@ -794,10 +794,10 @@ class LiteLLMAnthropicMessagesAdapter:
         if "tool_choice" in anthropic_message_request:
             tool_choice = anthropic_message_request["tool_choice"]
             if tool_choice:
-                new_kwargs[
-                    "tool_choice"
-                ] = self.translate_anthropic_tool_choice_to_openai(
-                    tool_choice=cast(AnthropicMessagesToolChoice, tool_choice)
+                new_kwargs["tool_choice"] = (
+                    self.translate_anthropic_tool_choice_to_openai(
+                        tool_choice=cast(AnthropicMessagesToolChoice, tool_choice)
+                    )
                 )
         ## CONVERT TOOLS
         if "tools" in anthropic_message_request:
@@ -868,9 +868,7 @@ class LiteLLMAnthropicMessagesAdapter:
 
         return None
 
-    def _translate_openai_content_to_anthropic(
-        self, choices: List[Choices]
-    ) -> List[
+    def _translate_openai_content_to_anthropic(self, choices: List[Choices]) -> List[
         Union[
             AnthropicResponseContentBlockText,
             AnthropicResponseContentBlockToolUse,
@@ -1372,9 +1370,9 @@ class LiteLLMAnthropicMessagesAdapter:
             hasattr(usage, "_cache_creation_input_tokens")
             and usage._cache_creation_input_tokens > 0
         ):
-            anthropic_usage[
-                "cache_creation_input_tokens"
-            ] = usage._cache_creation_input_tokens
+            anthropic_usage["cache_creation_input_tokens"] = (
+                usage._cache_creation_input_tokens
+            )
         if (
             hasattr(usage, "_cache_read_input_tokens")
             and usage._cache_read_input_tokens > 0
@@ -1513,6 +1511,10 @@ class LiteLLMAnthropicMessagesAdapter:
     def _translate_streaming_openai_responses_api_message_delta(
         self, response: Any, event_type: Optional[str]
     ) -> Optional[MessageBlockDelta]:
+        """Translate a Responses API stream lifecycle event to an Anthropic message_delta.
+
+        Returns None for non-lifecycle events.
+        """
         if event_type not in (
             ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
             ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
@@ -1550,21 +1552,31 @@ class LiteLLMAnthropicMessagesAdapter:
         )
 
         # Preserve cache token accounting when present.
-        if response_usage is not None and not isinstance(response_usage, dict):
-            if (
-                hasattr(response_usage, "_cache_creation_input_tokens")
-                and getattr(response_usage, "_cache_creation_input_tokens") > 0
-            ):
-                usage_delta["cache_creation_input_tokens"] = int(
-                    getattr(response_usage, "_cache_creation_input_tokens")
+        if response_usage is not None:
+            if isinstance(response_usage, dict):
+                cache_creation = int(
+                    response_usage.get("cache_creation_input_tokens")
+                    or response_usage.get("_cache_creation_input_tokens")
+                    or 0
                 )
-            if (
-                hasattr(response_usage, "_cache_read_input_tokens")
-                and getattr(response_usage, "_cache_read_input_tokens") > 0
-            ):
-                usage_delta["cache_read_input_tokens"] = int(
-                    getattr(response_usage, "_cache_read_input_tokens")
+                cache_read = int(
+                    response_usage.get("cache_read_input_tokens")
+                    or response_usage.get("_cache_read_input_tokens")
+                    or 0
                 )
+                if cache_creation > 0:
+                    usage_delta["cache_creation_input_tokens"] = cache_creation
+                if cache_read > 0:
+                    usage_delta["cache_read_input_tokens"] = cache_read
+            else:
+                cache_creation = (
+                    getattr(response_usage, "_cache_creation_input_tokens", 0) or 0
+                )
+                cache_read = getattr(response_usage, "_cache_read_input_tokens", 0) or 0
+                if cache_creation > 0:
+                    usage_delta["cache_creation_input_tokens"] = int(cache_creation)
+                if cache_read > 0:
+                    usage_delta["cache_read_input_tokens"] = int(cache_read)
 
         return MessageBlockDelta(
             type="message_delta",
@@ -1578,6 +1590,21 @@ class LiteLLMAnthropicMessagesAdapter:
         event_type: Optional[str],
         current_content_block_index: int,
     ) -> Optional[ContentBlockDelta]:
+        """Translate a Responses API stream delta event to an Anthropic content_block_delta.
+
+        Returns None for events that should not emit deltas (e.g. *_done).
+        """
+        # Explicit no-op for completion events (avoid emitting empty deltas).
+        if event_type in (
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+            ResponsesAPIStreamEvents.REFUSAL_DONE,
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
+            ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+            ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DONE,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
+        ):
+            return None
+
         if event_type in (
             ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
             ResponsesAPIStreamEvents.REFUSAL_DELTA,
@@ -1624,6 +1651,10 @@ class LiteLLMAnthropicMessagesAdapter:
         event_type: Optional[str],
         current_content_block_index: int,
     ) -> Optional[ContentBlockDelta]:
+        """Emit an initial delta when a new output item starts (Responses API streaming).
+
+        This helps downstream consumers start a new content block before deltas arrive.
+        """
         if event_type != ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED:
             return None
 
@@ -1653,7 +1684,11 @@ class LiteLLMAnthropicMessagesAdapter:
 
     def _translate_streaming_openai_responses_api_event_to_anthropic(
         self, response: Any, current_content_block_index: int
-    ) -> Union[ContentBlockDelta, MessageBlockDelta]:
+    ) -> Optional[Union[ContentBlockDelta, MessageBlockDelta]]:
+        """Translate a single Responses API streaming event to Anthropic SSE payload.
+
+        Returns None for no-op events to avoid emitting empty deltas.
+        """
         event_type = self._get_responses_api_stream_event_type(response)
 
         message_delta = self._translate_streaming_openai_responses_api_message_delta(
@@ -1682,11 +1717,8 @@ class LiteLLMAnthropicMessagesAdapter:
                 event_type,
             )
 
-        return ContentBlockDelta(
-            type="content_block_delta",
-            index=current_content_block_index,
-            delta=ContentTextBlockDelta(type="text_delta", text=""),
-        )
+        # Unknown/unhandled events should not emit empty deltas; treat as no-op.
+        return None
 
     def _translate_streaming_openai_chat_completion_to_anthropic(
         self, response: ModelResponse, current_content_block_index: int
@@ -1717,16 +1749,16 @@ class LiteLLMAnthropicMessagesAdapter:
                     hasattr(litellm_usage_chunk, "_cache_creation_input_tokens")
                     and litellm_usage_chunk._cache_creation_input_tokens > 0
                 ):
-                    usage_delta[
-                        "cache_creation_input_tokens"
-                    ] = litellm_usage_chunk._cache_creation_input_tokens
+                    usage_delta["cache_creation_input_tokens"] = (
+                        litellm_usage_chunk._cache_creation_input_tokens
+                    )
                 if (
                     hasattr(litellm_usage_chunk, "_cache_read_input_tokens")
                     and litellm_usage_chunk._cache_read_input_tokens > 0
                 ):
-                    usage_delta[
-                        "cache_read_input_tokens"
-                    ] = litellm_usage_chunk._cache_read_input_tokens
+                    usage_delta["cache_read_input_tokens"] = (
+                        litellm_usage_chunk._cache_read_input_tokens
+                    )
             else:
                 usage_delta = UsageDelta(input_tokens=0, output_tokens=0)
             return MessageBlockDelta(
@@ -1749,7 +1781,7 @@ class LiteLLMAnthropicMessagesAdapter:
 
     def translate_streaming_openai_response_to_anthropic(
         self, response: Any, current_content_block_index: int
-    ) -> Union[ContentBlockDelta, MessageBlockDelta]:
+    ) -> Optional[Union[ContentBlockDelta, MessageBlockDelta]]:
         """Translate OpenAI streaming chunks to Anthropic streaming SSE events.
 
         Supports both:

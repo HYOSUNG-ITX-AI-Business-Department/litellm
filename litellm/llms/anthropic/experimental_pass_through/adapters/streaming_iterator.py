@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Iterator, Literal, Optional
 from litellm import verbose_logger
 from litellm._uuid import uuid
 from litellm.types.llms.anthropic import UsageDelta
+from litellm.types.llms.openai import ResponsesAPIStreamEvents
 from litellm.types.utils import AdapterCompletionStreamWrapper
 
 
@@ -120,6 +121,11 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         current_content_block_index=self.current_content_block_index,
                     )
                 )
+
+                # Some Responses API stream events are no-ops (e.g. *_done) and should
+                # not emit SSE deltas.
+                if processed_chunk is None:
+                    continue
 
                 # Check if we need to start a new content block
                 # This is where you'd add your logic to detect when a new content block should start
@@ -239,20 +245,20 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         "output_tokens": chunk.usage.completion_tokens or 0,
                     }
                     # Add cache tokens if available (for prompt caching support)
-                    if (
-                        hasattr(chunk.usage, "_cache_creation_input_tokens")
-                        and chunk.usage._cache_creation_input_tokens > 0
-                    ):
-                        usage_dict[
-                            "cache_creation_input_tokens"
-                        ] = chunk.usage._cache_creation_input_tokens
-                    if (
-                        hasattr(chunk.usage, "_cache_read_input_tokens")
-                        and chunk.usage._cache_read_input_tokens > 0
-                    ):
-                        usage_dict[
-                            "cache_read_input_tokens"
-                        ] = chunk.usage._cache_read_input_tokens
+                    if hasattr(chunk.usage, "_cache_creation_input_tokens"):
+                        cache_creation = (
+                            getattr(chunk.usage, "_cache_creation_input_tokens", 0) or 0
+                        )
+                        if cache_creation > 0:
+                            usage_dict["cache_creation_input_tokens"] = int(
+                                cache_creation
+                            )
+                    if hasattr(chunk.usage, "_cache_read_input_tokens"):
+                        cache_read = (
+                            getattr(chunk.usage, "_cache_read_input_tokens", 0) or 0
+                        )
+                        if cache_read > 0:
+                            usage_dict["cache_read_input_tokens"] = int(cache_read)
                     merged_chunk["usage"] = usage_dict
 
                     # Queue the merged chunk and reset
@@ -414,9 +420,15 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
             # Responses API streaming
             event_type = self._adapter._get_responses_api_stream_event_type(chunk)
             if event_type in (
-                "response.completed",
-                "response.incomplete",
-                "response.failed",
+                ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+                ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
+                ResponsesAPIStreamEvents.RESPONSE_FAILED,
+                ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
+                ResponsesAPIStreamEvents.REFUSAL_DONE,
+                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
+                ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DONE,
+                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
+                ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
             ):
                 return False
 
