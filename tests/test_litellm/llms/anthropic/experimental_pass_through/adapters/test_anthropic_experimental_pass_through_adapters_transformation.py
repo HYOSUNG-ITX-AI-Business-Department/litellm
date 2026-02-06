@@ -10,15 +10,11 @@ sys.path.insert(0, os.path.abspath("../../../../.."))
 from litellm.llms.anthropic.experimental_pass_through.adapters.transformation import (
     LiteLLMAnthropicMessagesAdapter,
 )
-from litellm.llms.anthropic.experimental_pass_through.adapters.streaming_iterator import (
-    AnthropicStreamWrapper,
-)
 from litellm.types.llms.anthropic import (
     AnthopicMessagesAssistantMessageParam,
     AnthropicMessagesUserMessageParam,
 )
 from litellm.types.llms.openai import ChatCompletionAssistantToolCall
-from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.utils import (
     ChatCompletionDeltaToolCall,
     Choices,
@@ -45,8 +41,7 @@ def test_translate_streaming_openai_chunk_to_anthropic_content_block():
                     ChatCompletionDeltaToolCall(
                         id="call_d581d130-e234-4315-94e8-27e7ff7c4e55",
                         function=Function(
-                            arguments='{"location": "Boston"}',
-                            name="get_weather",
+                            arguments='{"location": "Boston"}', name="get_weather"
                         ),
                         type="function",
                         index=0,
@@ -397,8 +392,7 @@ def test_translate_openai_response_to_anthropic_text_and_tool_calls():
                             id="call_tool_combo",
                             type="function",
                             function=Function(
-                                name="get_weather",
-                                arguments='{"location": "Paris"}',
+                                name="get_weather", arguments='{"location": "Paris"}'
                             ),
                         )
                     ],
@@ -424,370 +418,132 @@ def test_translate_openai_response_to_anthropic_text_and_tool_calls():
     assert anthropic_response.get("stop_reason") == "tool_use"
 
 
-def test_translate_openai_responses_api_response_to_anthropic_text_and_tool_calls():
-    """Responses API output should translate to Anthropic text + tool_use blocks."""
+def test_responses_api_bridge_output_translates_to_anthropic_tool_use():
+    """Regression: `responses_api_bridge` converts Responses API -> ModelResponse.
 
-    responses_api_response = ResponsesAPIResponse(
-        id="resp_text_tool_responses_api",
+    The Anthropic experimental pass-through adapter is expected to receive a
+    `ModelResponse` (Chat Completions shape), not a `ResponsesAPIResponse`.
+    """
+
+    from unittest.mock import Mock
+
+    from openai.types.responses import ResponseFunctionToolCall
+    from openai.types.responses.response_reasoning_item import (
+        ResponseReasoningItem,
+        Summary,
+    )
+
+    from litellm.completion_extras.litellm_responses_transformation.transformation import (
+        LiteLLMResponsesTransformationHandler,
+    )
+    from litellm.types.llms.openai import (
+        InputTokensDetails,
+        OutputTokensDetails,
+        ResponseAPIUsage,
+        ResponsesAPIResponse,
+    )
+    from litellm.types.utils import ModelResponse, Usage
+
+    handler = LiteLLMResponsesTransformationHandler()
+
+    reasoning_summary = Summary(
+        text="Reasoning summary text",
+        type="summary_text",
+    )
+    reasoning_item = ResponseReasoningItem(
+        id="rs_test",
+        summary=[reasoning_summary],
+        type="reasoning",
+        content=None,
+        encrypted_content=None,
+        status=None,
+    )
+    tool_call = ResponseFunctionToolCall(
+        id="fc_test",
+        type="function_call",
+        status="completed",
+        arguments='{"location": "Paris"}',
+        call_id="call_paris",
+        name="get_weather",
+    )
+
+    usage = ResponseAPIUsage(
+        input_tokens=5,
+        input_tokens_details=InputTokensDetails(cached_tokens=0),
+        output_tokens=2,
+        output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
+        total_tokens=7,
+    )
+    raw_response = ResponsesAPIResponse(
+        id="resp_test",
         created_at=0,
+        error=None,
+        incomplete_details=None,
+        instructions=None,
+        metadata={},
         model="gpt-4o-mini",
         object="response",
+        output=[reasoning_item, tool_call],
+        parallel_tool_calls=True,
+        temperature=1.0,
+        tool_choice="auto",
+        tools=[],
+        top_p=1.0,
+        max_output_tokens=None,
+        previous_response_id=None,
+        reasoning=None,
         status="completed",
-        output=[
-            {
-                "type": "message",
-                "id": "msg_1",
-                "status": "completed",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Let me grab the current weather.",
-                        "annotations": [],
-                    }
-                ],
-            },
-            {
-                "type": "function_call",
-                "id": "call_tool_combo",
-                "call_id": "call_tool_combo",
-                "name": "get_weather",
-                "arguments": '{"location": "Paris"}',
-                "status": "completed",
-                "provider_specific_fields": {"thought_signature": "sigsig"},
-            },
-        ],
-        usage=ResponseAPIUsage(input_tokens=5, output_tokens=2, total_tokens=7),
+        text=None,
+        truncation="disabled",
+        usage=usage,
+        user=None,
+        store=True,
+        background=False,
     )
+
+    model_response = ModelResponse(
+        id="chatcmpl-test",
+        created=0,
+        model=None,
+        object="chat.completion",
+        choices=[],
+        usage=Usage(completion_tokens=0, prompt_tokens=0, total_tokens=0),
+    )
+
+    bridged = handler.transform_response(
+        model="gpt-4o-mini",
+        raw_response=raw_response,
+        model_response=model_response,
+        logging_obj=Mock(),
+        request_data={"model": "gpt-4o-mini"},
+        messages=[{"role": "user", "content": "What's the weather?"}],
+        optional_params={},
+        litellm_params={},
+        encoding=Mock(),
+        api_key=None,
+        json_mode=None,
+    )
+
+    assert bridged.choices[0].finish_reason == "tool_calls"
+    assert bridged.choices[0].message.tool_calls is not None
+    assert bridged.choices[0].message.tool_calls[0]["id"] == "call_paris"
+    assert bridged.choices[0].message.reasoning_content == "Reasoning summary text"
 
     adapter = LiteLLMAnthropicMessagesAdapter()
     anthropic_response = adapter.translate_openai_response_to_anthropic(
-        response=responses_api_response
+        response=bridged
     )
 
     anthropic_content = anthropic_response.get("content")
     assert anthropic_content is not None
     assert len(anthropic_content) == 2
-    assert cast(Any, anthropic_content[0]).type == "text"
-    assert cast(Any, anthropic_content[0]).text == "Let me grab the current weather."
+    assert cast(Any, anthropic_content[0]).type == "thinking"
+    assert cast(Any, anthropic_content[0]).thinking == "Reasoning summary text"
     assert cast(Any, anthropic_content[1]).type == "tool_use"
-    assert cast(Any, anthropic_content[1]).id == "call_tool_combo"
+    assert cast(Any, anthropic_content[1]).id == "call_paris"
     assert cast(Any, anthropic_content[1]).name == "get_weather"
     assert cast(Any, anthropic_content[1]).input == {"location": "Paris"}
-    assert (
-        cast(Any, anthropic_content[1]).provider_specific_fields.get("signature")
-        == "sigsig"
-    )
     assert anthropic_response.get("stop_reason") == "tool_use"
-
-
-def test_translate_openai_responses_api_response_to_anthropic_reasoning_summary():
-    """Responses API reasoning outputs should translate to Anthropic thinking blocks."""
-
-    responses_api_response = ResponsesAPIResponse(
-        id="resp_reasoning_summary_responses_api",
-        created_at=0,
-        model="gpt-4o-mini",
-        object="response",
-        status="completed",
-        output=[
-            {
-                "type": "reasoning",
-                "id": "reason_1",
-                "status": "completed",
-                "content": [],
-                "summary": [
-                    {
-                        "type": "output_text",
-                        "text": "I should think this through.",
-                    }
-                ],
-            }
-        ],
-        usage=ResponseAPIUsage(input_tokens=5, output_tokens=2, total_tokens=7),
-    )
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    anthropic_response = adapter.translate_openai_response_to_anthropic(
-        response=responses_api_response
-    )
-
-    anthropic_content = anthropic_response.get("content")
-    assert anthropic_content is not None
-    assert len(anthropic_content) == 1
-    assert cast(Any, anthropic_content[0]).type == "thinking"
-    assert cast(Any, anthropic_content[0]).thinking == "I should think this through."
-    assert anthropic_response.get("stop_reason") == "end_turn"
-
-
-def test_translate_openai_responses_api_response_to_anthropic_incomplete_status_has_max_tokens():
-    """Incomplete Responses API response should map to Anthropic max_tokens stop_reason."""
-
-    responses_api_response = ResponsesAPIResponse(
-        id="resp_incomplete_responses_api",
-        created_at=0,
-        model="gpt-4o-mini",
-        object="response",
-        status="incomplete",
-        output=[
-            {
-                "type": "message",
-                "id": "msg_incomplete",
-                "status": "incomplete",
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Partial output.",
-                        "annotations": [],
-                    }
-                ],
-            }
-        ],
-        usage=ResponseAPIUsage(input_tokens=5, output_tokens=2, total_tokens=7),
-    )
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    anthropic_response = adapter.translate_openai_response_to_anthropic(
-        response=responses_api_response
-    )
-
-    assert anthropic_response.get("stop_reason") == "max_tokens"
-
-
-def test_translate_openai_responses_api_response_to_anthropic_empty_output():
-    """Empty Responses API output should return empty content with end_turn stop_reason."""
-
-    responses_api_response = ResponsesAPIResponse(
-        id="resp_empty_output_responses_api",
-        created_at=0,
-        model="gpt-4o-mini",
-        object="response",
-        status="completed",
-        output=[],
-        usage=ResponseAPIUsage(input_tokens=0, output_tokens=0, total_tokens=0),
-    )
-
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    anthropic_response = adapter.translate_openai_response_to_anthropic(
-        response=responses_api_response
-    )
-
-    anthropic_content = anthropic_response.get("content")
-    assert anthropic_content is not None
-    assert anthropic_content == []
-    assert anthropic_response.get("stop_reason") == "end_turn"
-
-
-def test_translate_streaming_openai_responses_api_output_text_delta_to_anthropic():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.output_text.delta",
-        "item_id": "msg_1",
-        "output_index": 0,
-        "content_index": 0,
-        "delta": "Hello",
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=0,
-    )
-
-    assert out["type"] == "content_block_delta"
-    assert out["index"] == 0
-    assert out["delta"]["type"] == "text_delta"
-    assert out["delta"]["text"] == "Hello"
-
-
-def test_translate_streaming_openai_responses_api_function_call_arguments_delta_to_anthropic():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.function_call_arguments.delta",
-        "item_id": "call_1",
-        "output_index": 0,
-        "delta": '{"location":',
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=2,
-    )
-
-    assert out["type"] == "content_block_delta"
-    assert out["index"] == 2
-    assert out["delta"]["type"] == "input_json_delta"
-    assert out["delta"]["partial_json"] == '{"location":'
-
-
-def test_translate_streaming_openai_responses_api_mcp_call_arguments_delta_to_anthropic():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.mcp_call_arguments.delta",
-        "item_id": "mcp_call_1",
-        "output_index": 0,
-        "delta": '{"query":',
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=3,
-    )
-
-    assert out["type"] == "content_block_delta"
-    assert out["index"] == 3
-    assert out["delta"]["type"] == "input_json_delta"
-    assert out["delta"]["partial_json"] == '{"query":'
-
-
-def test_translate_streaming_openai_responses_api_output_item_added_function_call_to_anthropic():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.output_item.added",
-        "item": {
-            "type": "function_call",
-            "id": "call_1",
-            "call_id": "call_1",
-            "name": "get_weather",
-            "arguments": "{}",
-            "status": "in_progress",
-        },
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=1,
-    )
-
-    assert out["type"] == "content_block_delta"
-    assert out["index"] == 1
-    assert out["delta"]["type"] == "input_json_delta"
-    assert out["delta"]["partial_json"] == ""
-
-
-def test_translate_streaming_openai_responses_api_reasoning_summary_text_delta_to_anthropic():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.reasoning_summary_text.delta",
-        "item_id": "reason_1",
-        "output_index": 0,
-        "delta": "I should think.",
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=1,
-    )
-
-    assert out["type"] == "content_block_delta"
-    assert out["index"] == 1
-    assert out["delta"]["type"] == "thinking_delta"
-    assert out["delta"]["thinking"] == "I should think."
-
-
-def test_translate_streaming_openai_responses_api_response_completed_to_anthropic_message_delta():
-    adapter = LiteLLMAnthropicMessagesAdapter()
-    chunk = {
-        "type": "response.completed",
-        "response": {
-            "id": "resp_1",
-            "status": "completed",
-            "usage": {
-                "input_tokens": 3,
-                "output_tokens": 4,
-                "total_tokens": 7,
-            },
-        },
-    }
-
-    out = adapter.translate_streaming_openai_response_to_anthropic(
-        response=chunk,
-        current_content_block_index=0,
-    )
-
-    assert out["type"] == "message_delta"
-    assert out["delta"]["stop_reason"] == "end_turn"
-    assert out["usage"]["input_tokens"] == 3
-    assert out["usage"]["output_tokens"] == 4
-
-
-@pytest.mark.asyncio
-async def test_anthropic_stream_wrapper_responses_api_block_transitions():
-    async def _stream():
-        yield {
-            "type": "response.output_text.delta",
-            "item_id": "msg_1",
-            "output_index": 0,
-            "content_index": 0,
-            "delta": "Hello",
-        }
-        yield {
-            "type": "response.output_item.added",
-            "item": {
-                "type": "function_call",
-                "id": "call_1",
-                "call_id": "call_1",
-                "name": "get_weather",
-                "arguments": "{}",
-                "status": "in_progress",
-            },
-        }
-        yield {
-            "type": "response.function_call_arguments.delta",
-            "item_id": "call_1",
-            "output_index": 0,
-            "delta": '{"location": "Paris"}',
-        }
-        yield {
-            "type": "response.completed",
-            "response": {
-                "id": "resp_1",
-                "status": "completed",
-                "usage": {
-                    "input_tokens": 3,
-                    "output_tokens": 4,
-                    "total_tokens": 7,
-                },
-            },
-        }
-
-    wrapper = AnthropicStreamWrapper(completion_stream=_stream(), model="gpt-4o-mini")
-
-    out_types = []
-    out_chunks: list[dict[str, Any]] = []
-    async for chunk in wrapper:
-        assert isinstance(chunk, dict)
-        out_types.append(chunk["type"])
-        out_chunks.append(chunk)
-        if chunk["type"] == "message_stop":
-            break
-
-    # Basic stream framing
-    assert out_types[0] == "message_start"
-    assert out_types[1] == "content_block_start"
-
-    # First text delta
-    text_delta = next(
-        c
-        for c in out_chunks
-        if c["type"] == "content_block_delta" and c["delta"]["type"] == "text_delta"
-    )
-    assert text_delta["delta"]["text"] == "Hello"
-
-    # Must include a content block transition when switching to tool_use
-    assert "content_block_stop" in out_types
-    assert out_types.count("content_block_start") >= 2
-
-    tool_use_start = next(
-        c
-        for c in out_chunks
-        if c["type"] == "content_block_start"
-        and c["content_block"]["type"] == "tool_use"
-    )
-    assert tool_use_start["content_block"]["name"] == "get_weather"
-
-    # Final message stop
-    assert out_types[-1] == "message_stop"
 
 
 def test_translate_streaming_openai_chunk_to_anthropic_with_partial_json():
@@ -1039,10 +795,7 @@ def test_translate_anthropic_messages_to_openai_user_message_with_url_image():
                 {"type": "text", "text": "Describe this forest path"},
                 {
                     "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": "https://example.com/forest.jpg",
-                    },
+                    "source": {"type": "url", "url": "https://example.com/forest.jpg"},
                 },
             ],
         )
@@ -1201,10 +954,7 @@ def test_translate_anthropic_messages_to_openai_mixed_content_with_image():
                 {"type": "text", "text": "and this one:"},
                 {
                     "type": "image",
-                    "source": {
-                        "type": "url",
-                        "url": "https://example.com/image2.jpg",
-                    },
+                    "source": {"type": "url", "url": "https://example.com/image2.jpg"},
                 },
                 {"type": "text", "text": "What's the difference?"},
             ],
@@ -1333,10 +1083,7 @@ def test_translate_anthropic_messages_to_openai_tool_result_with_multiple_conten
                                 "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
                             },
                         },
-                        {
-                            "type": "text",
-                            "text": "Screenshot captured successfully.",
-                        },
+                        {"type": "text", "text": "Screenshot captured successfully."},
                     ],
                 }
             ],

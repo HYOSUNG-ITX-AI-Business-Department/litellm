@@ -3,13 +3,15 @@
 import json
 import traceback
 from collections import deque
-from typing import Any, AsyncIterator, Iterator, Literal, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Literal, Optional
 
 from litellm import verbose_logger
 from litellm._uuid import uuid
 from litellm.types.llms.anthropic import UsageDelta
-from litellm.types.llms.openai import ResponsesAPIStreamEvents
 from litellm.types.utils import AdapterCompletionStreamWrapper
+
+if TYPE_CHECKING:
+    from litellm.types.utils import ModelResponseStream
 
 
 class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
@@ -46,11 +48,6 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         super().__init__(completion_stream)
         self.model = model
 
-        # Reuse a single adapter instance (no mutable init state, but avoids per-chunk overhead).
-        from .transformation import LiteLLMAnthropicMessagesAdapter
-
-        self._adapter = LiteLLMAnthropicMessagesAdapter()
-
     def _create_initial_usage_delta(self) -> UsageDelta:
         """
         Create the initial UsageDelta for the message_start event.
@@ -73,6 +70,8 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         )
 
     def __next__(self):
+        from .transformation import LiteLLMAnthropicMessagesAdapter
+
         try:
             if self.sent_first_chunk is False:
                 self.sent_first_chunk = True
@@ -115,17 +114,10 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                 if should_start_new_block:
                     self._increment_content_block_index()
 
-                processed_chunk = (
-                    self._adapter.translate_streaming_openai_response_to_anthropic(
-                        response=chunk,
-                        current_content_block_index=self.current_content_block_index,
-                    )
+                processed_chunk = LiteLLMAnthropicMessagesAdapter().translate_streaming_openai_response_to_anthropic(
+                    response=chunk,
+                    current_content_block_index=self.current_content_block_index,
                 )
-
-                # Some Responses API stream events are no-ops (e.g. *_done) and should
-                # not emit SSE deltas.
-                if processed_chunk is None:
-                    continue
 
                 # Check if we need to start a new content block
                 # This is where you'd add your logic to detect when a new content block should start
@@ -177,6 +169,8 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
             raise StopAsyncIteration
 
     async def __anext__(self):  # noqa: PLR0915
+        from .transformation import LiteLLMAnthropicMessagesAdapter
+
         try:
             # Always return queued chunks first
             if self.chunk_queue:
@@ -219,27 +213,13 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
 
                 # Check if we need to start a new content block
                 should_start_new_block = self._should_start_new_content_block(chunk)
-
-                next_content_block_index = (
-                    self.current_content_block_index + 1
-                    if should_start_new_block
-                    else self.current_content_block_index
-                )
-
-                processed_chunk = (
-                    self._adapter.translate_streaming_openai_response_to_anthropic(
-                        response=chunk,
-                        current_content_block_index=next_content_block_index,
-                    )
-                )
-
-                # translate_streaming_openai_response_to_anthropic can return None for
-                # no-op / *_DONE / unsupported events. Skip these safely.
-                if processed_chunk is None:
-                    continue
-
                 if should_start_new_block:
-                    self.current_content_block_index = next_content_block_index
+                    self._increment_content_block_index()
+
+                processed_chunk = LiteLLMAnthropicMessagesAdapter().translate_streaming_openai_response_to_anthropic(
+                    response=chunk,
+                    current_content_block_index=self.current_content_block_index,
+                )
 
                 # Check if this is a usage chunk and we have a held stop_reason chunk
                 if (
@@ -257,20 +237,10 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         "output_tokens": chunk.usage.completion_tokens or 0,
                     }
                     # Add cache tokens if available (for prompt caching support)
-                    if hasattr(chunk.usage, "_cache_creation_input_tokens"):
-                        cache_creation = (
-                            getattr(chunk.usage, "_cache_creation_input_tokens", 0) or 0
-                        )
-                        if cache_creation > 0:
-                            usage_dict["cache_creation_input_tokens"] = int(
-                                cache_creation
-                            )
-                    if hasattr(chunk.usage, "_cache_read_input_tokens"):
-                        cache_read = (
-                            getattr(chunk.usage, "_cache_read_input_tokens", 0) or 0
-                        )
-                        if cache_read > 0:
-                            usage_dict["cache_read_input_tokens"] = int(cache_read)
+                    if hasattr(chunk.usage, "_cache_creation_input_tokens") and chunk.usage._cache_creation_input_tokens > 0:
+                        usage_dict["cache_creation_input_tokens"] = chunk.usage._cache_creation_input_tokens
+                    if hasattr(chunk.usage, "_cache_read_input_tokens") and chunk.usage._cache_read_input_tokens > 0:
+                        usage_dict["cache_read_input_tokens"] = chunk.usage._cache_read_input_tokens
                     merged_chunk["usage"] = usage_dict
 
                     # Queue the merged chunk and reset
@@ -407,7 +377,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
     def _increment_content_block_index(self):
         self.current_content_block_index += 1
 
-    def _should_start_new_content_block(self, chunk: Any) -> bool:
+    def _should_start_new_content_block(self, chunk: "ModelResponseStream") -> bool:
         """
         Determine if we should start a new content block based on the processed chunk.
         Override this method with your specific logic for detecting new content blocks.
@@ -417,39 +387,19 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         - Different content types in the response
         - Specific markers in the content
         """
-        if hasattr(chunk, "choices"):
-            # Chat Completions streaming
-            if chunk.choices[0].finish_reason is not None:
-                return False
+        from .transformation import LiteLLMAnthropicMessagesAdapter
 
-            (
-                block_type,
-                content_block_start,
-            ) = self._adapter._translate_streaming_openai_chunk_to_anthropic_content_block(
-                choices=chunk.choices  # type: ignore
-            )
-        else:
-            # Responses API streaming
-            event_type = self._adapter._get_responses_api_stream_event_type(chunk)
-            if event_type in (
-                ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
-                ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
-                ResponsesAPIStreamEvents.RESPONSE_FAILED,
-                ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE,
-                ResponsesAPIStreamEvents.REFUSAL_DONE,
-                ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE,
-                ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DONE,
-                ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
-                ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE,
-            ):
-                return False
+        # Example logic - customize based on your needs:
+        # If chunk indicates a tool call
+        if chunk.choices[0].finish_reason is not None:
+            return False
 
-            (
-                block_type,
-                content_block_start,
-            ) = self._adapter._translate_streaming_openai_responses_api_event_to_anthropic_content_block(
-                chunk
-            )
+        (
+            block_type,
+            content_block_start,
+        ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic_content_block(
+            choices=chunk.choices  # type: ignore
+        )
 
         if block_type != self.current_content_block_type:
             self.current_content_block_type = block_type

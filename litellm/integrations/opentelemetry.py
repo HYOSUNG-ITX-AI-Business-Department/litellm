@@ -599,9 +599,9 @@ class OpenTelemetry(CustomLogger):
 
     def _get_dynamic_otel_headers_from_kwargs(self, kwargs) -> Optional[dict]:
         """Extract dynamic headers from kwargs if available."""
-        standard_callback_dynamic_params: Optional[
-            StandardCallbackDynamicParams
-        ] = kwargs.get("standard_callback_dynamic_params")
+        standard_callback_dynamic_params: Optional[StandardCallbackDynamicParams] = (
+            kwargs.get("standard_callback_dynamic_params")
+        )
 
         if not standard_callback_dynamic_params:
             return None
@@ -1010,11 +1010,11 @@ class OpenTelemetry(CustomLogger):
         from opentelemetry._logs import SeverityNumber, get_logger, get_logger_provider
 
         try:
-            # OTEL < 1.39.0
-            from opentelemetry.sdk._logs import LogRecord as SdkLogRecord  # type: ignore[attr-defined]
+            from opentelemetry.sdk._logs import LogRecord as SdkLogRecord  # type: ignore[attr-defined]  # OTEL < 1.39.0
         except ImportError:
-            # OTEL >= 1.39.0
-            from opentelemetry.sdk._logs._internal import LogRecord as SdkLogRecord  # type: ignore[attr-defined]
+            from opentelemetry.sdk._logs._internal import (
+                LogRecord as SdkLogRecord,  # OTEL >= 1.39.0
+            )
 
         otel_logger = get_logger(LITELLM_LOGGER_NAME)
 
@@ -1038,30 +1038,17 @@ class OpenTelemetry(CustomLogger):
             if self.message_logging and msg.get("content"):
                 attrs["gen_ai.prompt"] = msg["content"]
 
-            # OTEL >= 1.39.0 removed the `resource` constructor argument.
-            try:
-                log_record = SdkLogRecord(
-                    timestamp=self._to_ns(datetime.now()),
-                    trace_id=parent_ctx.trace_id,
-                    span_id=parent_ctx.span_id,
-                    trace_flags=parent_ctx.trace_flags,
-                    severity_number=SeverityNumber.INFO,
-                    severity_text="INFO",
-                    body=msg.copy(),
-                    resource=resource,
-                    attributes=attrs,
-                )
-            except TypeError:
-                log_record = SdkLogRecord(
-                    timestamp=self._to_ns(datetime.now()),
-                    trace_id=parent_ctx.trace_id,
-                    span_id=parent_ctx.span_id,
-                    trace_flags=parent_ctx.trace_flags,
-                    severity_number=SeverityNumber.INFO,
-                    severity_text="INFO",
-                    body=msg.copy(),
-                    attributes=attrs,
-                )
+            log_record = SdkLogRecord(
+                timestamp=self._to_ns(datetime.now()),
+                trace_id=parent_ctx.trace_id,
+                span_id=parent_ctx.span_id,
+                trace_flags=parent_ctx.trace_flags,
+                severity_number=SeverityNumber.INFO,
+                severity_text="INFO",
+                body=msg.copy(),
+                resource=resource,
+                attributes=attrs,
+            )
             otel_logger.emit(log_record)
 
         # per-choice events
@@ -1083,30 +1070,17 @@ class OpenTelemetry(CustomLogger):
             if self.message_logging and body_msg.get("content"):
                 body["message"]["content"] = body_msg["content"]
 
-            # OTEL >= 1.39.0 removed the `resource` constructor argument.
-            try:
-                log_record = SdkLogRecord(
-                    timestamp=self._to_ns(datetime.now()),
-                    trace_id=parent_ctx.trace_id,
-                    span_id=parent_ctx.span_id,
-                    trace_flags=parent_ctx.trace_flags,
-                    severity_number=SeverityNumber.INFO,
-                    severity_text="INFO",
-                    body=body,
-                    resource=resource,
-                    attributes=attrs,
-                )
-            except TypeError:
-                log_record = SdkLogRecord(
-                    timestamp=self._to_ns(datetime.now()),
-                    trace_id=parent_ctx.trace_id,
-                    span_id=parent_ctx.span_id,
-                    trace_flags=parent_ctx.trace_flags,
-                    severity_number=SeverityNumber.INFO,
-                    severity_text="INFO",
-                    body=body,
-                    attributes=attrs,
-                )
+            log_record = SdkLogRecord(
+                timestamp=self._to_ns(datetime.now()),
+                trace_id=parent_ctx.trace_id,
+                span_id=parent_ctx.span_id,
+                trace_flags=parent_ctx.trace_flags,
+                severity_number=SeverityNumber.INFO,
+                severity_text="INFO",
+                body=body,
+                resource=resource,
+                attributes=attrs,
+            )
             otel_logger.emit(log_record)
 
     def _create_guardrail_span(
