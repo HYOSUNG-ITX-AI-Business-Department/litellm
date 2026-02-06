@@ -100,7 +100,3 @@ STABILIZATION_TODO.md
 **/playwright-report
 **/*.storageState.json
 **/coverage
-
-# OpenCode / agent local artifacts (do not commit)
-registered_agents.json
-task_agent_mapping.json

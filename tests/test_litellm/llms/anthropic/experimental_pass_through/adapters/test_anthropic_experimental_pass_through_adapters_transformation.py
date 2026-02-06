@@ -657,6 +657,47 @@ def test_translate_streaming_openai_chunk_to_anthropic_with_signature():
     assert content_block_delta["thinking"] == "I need to summar"
 
 
+def test_translate_streaming_openai_chunk_to_anthropic_with_reasoning_content_only():
+    """Responses API bridge streaming emits `delta.reasoning_content` (no thinking_blocks)."""
+
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                reasoning_content="Reasoning summary text",
+                content="",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+
+    block_type, content_block_start = (
+        adapter._translate_streaming_openai_chunk_to_anthropic_content_block(
+            choices=choices
+        )
+    )
+    assert block_type == "thinking"
+    assert content_block_start == {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "",
+    }
+
+    type_of_content, content_block_delta = (
+        adapter._translate_streaming_openai_chunk_to_anthropic(choices=choices)
+    )
+    assert type_of_content == "thinking_delta"
+    assert content_block_delta["type"] == "thinking_delta"
+    assert content_block_delta["thinking"] == "Reasoning summary text"
+
+
 def test_translate_streaming_openai_chunk_to_anthropic_with_thinking():
     choices = [
         StreamingChoices(
