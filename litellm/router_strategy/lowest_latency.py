@@ -46,7 +46,7 @@ class LowestLatencyLoggingHandler(CustomLogger):
             """
             metadata_field = self._select_metadata_field(kwargs)
             if kwargs["litellm_params"].get(metadata_field) is None:
-                pass
+                return
             else:
                 model_group = kwargs["litellm_params"][metadata_field].get(
                     "model_group", None
@@ -198,7 +198,7 @@ class LowestLatencyLoggingHandler(CustomLogger):
             _exception = kwargs.get("exception", None)
             if isinstance(_exception, litellm.Timeout):
                 if kwargs["litellm_params"].get(metadata_field) is None:
-                    pass
+                    return
                 else:
                     model_group = kwargs["litellm_params"][metadata_field].get(
                         "model_group", None
@@ -267,7 +267,7 @@ class LowestLatencyLoggingHandler(CustomLogger):
             """
             metadata_field = self._select_metadata_field(kwargs)
             if kwargs["litellm_params"].get(metadata_field) is None:
-                pass
+                return
             else:
                 model_group = kwargs["litellm_params"][metadata_field].get(
                     "model_group", None
