@@ -63,8 +63,6 @@ def test_translate_streaming_openai_chunk_to_anthropic_content_block():
         choices=choices
     )
 
-    print(content_block_start)
-
     assert block_type == "tool_use"
     assert content_block_start == {
         "type": "tool_use",
@@ -329,7 +327,8 @@ def test_translate_openai_content_to_anthropic_empty_function_arguments():
                         id="call_empty_args",
                         type="function",
                         function=Function(
-                            name="test_function", arguments=""  # empty arguments string
+                            name="test_function",
+                            arguments="",  # empty arguments string
                         ),
                     )
                 ],
@@ -422,6 +421,134 @@ def test_translate_openai_response_to_anthropic_text_and_tool_calls():
     assert anthropic_response.get("stop_reason") == "tool_use"
 
 
+def test_responses_api_bridge_output_translates_to_anthropic_tool_use():
+    """Regression: `responses_api_bridge` converts Responses API -> ModelResponse.
+
+    The Anthropic experimental pass-through adapter is expected to receive a
+    `ModelResponse` (Chat Completions shape), not a `ResponsesAPIResponse`.
+    """
+
+    from unittest.mock import Mock
+
+    from openai.types.responses import ResponseFunctionToolCall
+    from openai.types.responses.response_reasoning_item import (
+        ResponseReasoningItem,
+        Summary,
+    )
+
+    from litellm.completion_extras.litellm_responses_transformation.transformation import (
+        LiteLLMResponsesTransformationHandler,
+    )
+    from litellm.types.llms.openai import (
+        InputTokensDetails,
+        OutputTokensDetails,
+        ResponseAPIUsage,
+        ResponsesAPIResponse,
+    )
+    from litellm.types.utils import ModelResponse, Usage
+
+    handler = LiteLLMResponsesTransformationHandler()
+
+    reasoning_summary = Summary(
+        text="Reasoning summary text",
+        type="summary_text",
+    )
+    reasoning_item = ResponseReasoningItem(
+        id="rs_test",
+        summary=[reasoning_summary],
+        type="reasoning",
+        content=None,
+        encrypted_content=None,
+        status=None,
+    )
+    tool_call = ResponseFunctionToolCall(
+        id="fc_test",
+        type="function_call",
+        status="completed",
+        arguments='{"location": "Paris"}',
+        call_id="call_paris",
+        name="get_weather",
+    )
+
+    usage = ResponseAPIUsage(
+        input_tokens=5,
+        input_tokens_details=InputTokensDetails(cached_tokens=0),
+        output_tokens=2,
+        output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
+        total_tokens=7,
+    )
+    raw_response = ResponsesAPIResponse(
+        id="resp_test",
+        created_at=0,
+        error=None,
+        incomplete_details=None,
+        instructions=None,
+        metadata={},
+        model="gpt-4o-mini",
+        object="response",
+        output=[reasoning_item, tool_call],
+        parallel_tool_calls=True,
+        temperature=1.0,
+        tool_choice="auto",
+        tools=[],
+        top_p=1.0,
+        max_output_tokens=None,
+        previous_response_id=None,
+        reasoning=None,
+        status="completed",
+        text=None,
+        truncation="disabled",
+        usage=usage,
+        user=None,
+        store=True,
+        background=False,
+    )
+
+    model_response = ModelResponse(
+        id="chatcmpl-test",
+        created=0,
+        model=None,
+        object="chat.completion",
+        choices=[],
+        usage=Usage(completion_tokens=0, prompt_tokens=0, total_tokens=0),
+    )
+
+    bridged = handler.transform_response(
+        model="gpt-4o-mini",
+        raw_response=raw_response,
+        model_response=model_response,
+        logging_obj=Mock(),
+        request_data={"model": "gpt-4o-mini"},
+        messages=[{"role": "user", "content": "What's the weather?"}],
+        optional_params={},
+        litellm_params={},
+        encoding=Mock(),
+        api_key=None,
+        json_mode=None,
+    )
+
+    assert bridged.choices[0].finish_reason == "tool_calls"
+    assert bridged.choices[0].message.tool_calls is not None
+    assert bridged.choices[0].message.tool_calls[0]["id"] == "call_paris"
+    assert bridged.choices[0].message.reasoning_content == "Reasoning summary text"
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+    anthropic_response = adapter.translate_openai_response_to_anthropic(
+        response=bridged
+    )
+
+    anthropic_content = anthropic_response.get("content")
+    assert anthropic_content is not None
+    assert len(anthropic_content) == 2
+    assert cast(Any, anthropic_content[0]).type == "thinking"
+    assert cast(Any, anthropic_content[0]).thinking == "Reasoning summary text"
+    assert cast(Any, anthropic_content[1]).type == "tool_use"
+    assert cast(Any, anthropic_content[1]).id == "call_paris"
+    assert cast(Any, anthropic_content[1]).name == "get_weather"
+    assert cast(Any, anthropic_content[1]).input == {"location": "Paris"}
+    assert anthropic_response.get("stop_reason") == "tool_use"
+
+
 def test_translate_streaming_openai_chunk_to_anthropic_with_partial_json():
     """Test that partial tool arguments are correctly handled as input_json_delta."""
     choices = [
@@ -453,9 +580,6 @@ def test_translate_streaming_openai_chunk_to_anthropic_with_partial_json():
     ) = LiteLLMAnthropicMessagesAdapter()._translate_streaming_openai_chunk_to_anthropic(
         choices=choices
     )
-
-    print("Type of content:", type_of_content)
-    print("Content block delta:", content_block_delta)
 
     assert type_of_content == "input_json_delta"
     assert content_block_delta["type"] == "input_json_delta"
@@ -491,7 +615,7 @@ def test_translate_openai_content_to_anthropic_thinking_and_redacted_thinking():
     assert result[1]["data"] == "REDACTED"
 
 
-def test_translate_streaming_openai_chunk_to_anthropic_with_thinking():
+def test_translate_streaming_openai_chunk_to_anthropic_with_signature():
     choices = [
         StreamingChoices(
             finish_reason=None,
@@ -534,6 +658,47 @@ def test_translate_streaming_openai_chunk_to_anthropic_with_thinking():
     assert type_of_content == "thinking_delta"
     assert content_block_delta["type"] == "thinking_delta"
     assert content_block_delta["thinking"] == "I need to summar"
+
+
+def test_translate_streaming_openai_chunk_to_anthropic_with_reasoning_content_only():
+    """Responses API bridge streaming emits `delta.reasoning_content` (no thinking_blocks)."""
+
+    choices = [
+        StreamingChoices(
+            finish_reason=None,
+            index=0,
+            delta=Delta(
+                reasoning_content="Reasoning summary text",
+                content="",
+                role="assistant",
+                function_call=None,
+                tool_calls=None,
+                audio=None,
+            ),
+            logprobs=None,
+        )
+    ]
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+
+    block_type, content_block_start = (
+        adapter._translate_streaming_openai_chunk_to_anthropic_content_block(
+            choices=choices
+        )
+    )
+    assert block_type == "thinking"
+    assert content_block_start == {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "",
+    }
+
+    type_of_content, content_block_delta = (
+        adapter._translate_streaming_openai_chunk_to_anthropic(choices=choices)
+    )
+    assert type_of_content == "thinking_delta"
+    assert content_block_delta["type"] == "thinking_delta"
+    assert content_block_delta["thinking"] == "Reasoning summary text"
 
 
 def test_translate_streaming_openai_chunk_to_anthropic_with_thinking():
@@ -1053,10 +1218,9 @@ def test_translate_anthropic_messages_to_openai_tool_result_single_item_backward
     tool_message = tool_messages[0]
 
     # Single item should be a string for backward compatibility
-    assert isinstance(tool_message["content"], str), (
-        f"Single content item should be a string for backward compatibility, "
-        f"got {type(tool_message['content'])}"
-    )
+    assert isinstance(
+        tool_message["content"], str
+    ), f"Single content item should be a string for backward compatibility, got {type(tool_message['content'])}"
     assert tool_message["content"] == "72°F and sunny"
 
 
@@ -1118,7 +1282,9 @@ def test_streaming_chunk_with_both_text_and_tool_calls_issue_18238():
 # ============================================================================
 
 # Model constant for cache control tests
-CACHE_CONTROL_BEDROCK_CONVERSE_MODEL = "bedrock/converse/global.anthropic.claude-opus-4-5-20251101-v1:0"
+CACHE_CONTROL_BEDROCK_CONVERSE_MODEL = (
+    "bedrock/converse/global.anthropic.claude-opus-4-5-20251101-v1:0"
+)
 CACHE_CONTROL_NON_ANTHROPIC_MODEL = "gpt-4"
 
 
@@ -1134,7 +1300,9 @@ def test_should_add_cache_control_for_anthropic_model():
         "vertex_ai/claude-3-sonnet@20240229",
     ]:
         target = {}
-        adapter._add_cache_control_if_applicable({"cache_control": cache_control}, target, model)
+        adapter._add_cache_control_if_applicable(
+            {"cache_control": cache_control}, target, model
+        )
         assert "cache_control" in target
         assert target["cache_control"] == cache_control
 
@@ -1144,9 +1312,15 @@ def test_should_not_add_cache_control_for_non_anthropic_model():
     adapter = LiteLLMAnthropicMessagesAdapter()
     cache_control = {"type": "ephemeral"}
 
-    for model in [CACHE_CONTROL_NON_ANTHROPIC_MODEL, "openai/gpt-4-turbo", "gemini-pro"]:
+    for model in [
+        CACHE_CONTROL_NON_ANTHROPIC_MODEL,
+        "openai/gpt-4-turbo",
+        "gemini-pro",
+    ]:
         target = {}
-        adapter._add_cache_control_if_applicable({"cache_control": cache_control}, target, model)
+        adapter._add_cache_control_if_applicable(
+            {"cache_control": cache_control}, target, model
+        )
         assert "cache_control" not in target
 
 
@@ -1154,9 +1328,16 @@ def test_should_not_add_cache_control_when_none():
     """Should not add cache_control when source has None or empty cache_control."""
     adapter = LiteLLMAnthropicMessagesAdapter()
 
-    for source in [{"cache_control": None}, {"cache_control": {}}, {"cache_control": ""}, {}]:
+    for source in [
+        {"cache_control": None},
+        {"cache_control": {}},
+        {"cache_control": ""},
+        {},
+    ]:
         target = {}
-        adapter._add_cache_control_if_applicable(source, target, CACHE_CONTROL_BEDROCK_CONVERSE_MODEL)
+        adapter._add_cache_control_if_applicable(
+            source, target, CACHE_CONTROL_BEDROCK_CONVERSE_MODEL
+        )
         assert "cache_control" not in target
 
 
@@ -1167,7 +1348,9 @@ def test_should_not_add_cache_control_when_model_none():
 
     for model in [None, ""]:
         target = {}
-        adapter._add_cache_control_if_applicable({"cache_control": cache_control}, target, model)
+        adapter._add_cache_control_if_applicable(
+            {"cache_control": cache_control}, target, model
+        )
         assert "cache_control" not in target
 
 
@@ -1385,7 +1568,10 @@ def test_cache_control_preserved_in_tools_for_claude():
         {
             "name": "get_weather",
             "description": "Get weather for a location",
-            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}},
+            "input_schema": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+            },
             "cache_control": {"type": "ephemeral"},
         }
     ]
@@ -1406,7 +1592,10 @@ def test_cache_control_not_preserved_in_tools_for_non_claude():
         {
             "name": "get_weather",
             "description": "Get weather for a location",
-            "input_schema": {"type": "object", "properties": {"location": {"type": "string"}}},
+            "input_schema": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+            },
             "cache_control": {"type": "ephemeral"},
         }
     ]
