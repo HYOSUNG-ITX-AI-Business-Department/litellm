@@ -101,6 +101,11 @@ MCP_OAUTH2_TOKEN_CACHE_MAX_SIZE = int(
 MCP_OAUTH2_TOKEN_CACHE_DEFAULT_TTL = int(
     os.getenv("MCP_OAUTH2_TOKEN_CACHE_DEFAULT_TTL", "3600")
 )
+
+# Default npm cache directory for STDIO MCP servers.
+# npm/npx needs a writable cache dir; in containers the default (~/.npm)
+# may not exist or be read-only. /tmp is always writable.
+MCP_NPM_CACHE_DIR = os.getenv("MCP_NPM_CACHE_DIR", "/tmp/.npm_mcp_cache")
 MCP_OAUTH2_TOKEN_CACHE_MIN_TTL = int(
     os.getenv("MCP_OAUTH2_TOKEN_CACHE_MIN_TTL", "10")
 )
@@ -213,6 +218,10 @@ REDIS_DAILY_AGENT_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_agent_spend_update_bu
 REDIS_DAILY_TAG_SPEND_UPDATE_BUFFER_KEY = "litellm_daily_tag_spend_update_buffer"
 MAX_REDIS_BUFFER_DEQUEUE_COUNT = int(os.getenv("MAX_REDIS_BUFFER_DEQUEUE_COUNT", 100))
 MAX_SIZE_IN_MEMORY_QUEUE = int(os.getenv("MAX_SIZE_IN_MEMORY_QUEUE", 2000))
+# Bounds asyncio.Queue() instances (log queues, spend update queues, etc.) to prevent unbounded memory growth
+LITELLM_ASYNCIO_QUEUE_MAXSIZE = int(
+    os.getenv("LITELLM_ASYNCIO_QUEUE_MAXSIZE", 1000)
+)
 MAX_IN_MEMORY_QUEUE_FLUSH_COUNT = int(
     os.getenv("MAX_IN_MEMORY_QUEUE_FLUSH_COUNT", 1000)
 )
@@ -1007,10 +1016,12 @@ BEDROCK_EMBEDDING_PROVIDERS_LITERAL = Literal[
 
 BEDROCK_CONVERSE_MODELS = [
     "qwen.qwen3-coder-480b-a35b-v1:0",
+    "qwen.qwen3-coder-next",
     "qwen.qwen3-235b-a22b-2507-v1:0",
     "qwen.qwen3-coder-30b-a3b-v1:0",
     "qwen.qwen3-32b-v1:0",
     "deepseek.v3-v1:0",
+    "deepseek.v3.2",
     "openai.gpt-oss-20b-1:0",
     "openai.gpt-oss-120b-1:0",
     "anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1053,6 +1064,8 @@ BEDROCK_CONVERSE_MODELS = [
     "amazon.nova-pro-v1:0",
     "writer.palmyra-x4-v1:0",
     "writer.palmyra-x5-v1:0",
+    "minimax.minimax-m2.1",
+    "moonshotai.kimi-k2.5",
 ]
 
 
@@ -1306,6 +1319,9 @@ DEFAULT_SLACK_ALERTING_THRESHOLD = int(
     os.getenv("DEFAULT_SLACK_ALERTING_THRESHOLD", 300)
 )
 MAX_TEAM_LIST_LIMIT = int(os.getenv("MAX_TEAM_LIST_LIMIT", 20))
+MAX_POLICY_ESTIMATE_IMPACT_ROWS = int(
+    os.getenv("MAX_POLICY_ESTIMATE_IMPACT_ROWS", 1000)
+)
 DEFAULT_PROMPT_INJECTION_SIMILARITY_THRESHOLD = float(
     os.getenv("DEFAULT_PROMPT_INJECTION_SIMILARITY_THRESHOLD", 0.7)
 )
